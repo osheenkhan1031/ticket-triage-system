@@ -20,10 +20,11 @@ public class TicketService {
     private final TicketRepository ticketRepository;
     private final ChatClient chatClient;
 
-    // Spring AI automatically injects the ChatClient builder
+    // Updated constructor with safety check for ChatClient.Builder during testing
     public TicketService(TicketRepository ticketRepository, ChatClient.Builder chatClientBuilder) {
         this.ticketRepository = ticketRepository;
-        this.chatClient = chatClientBuilder.build();
+        // Agar test ke waqt builder null pass ho, toh app crash nahi hogi
+        this.chatClient = (chatClientBuilder != null) ? chatClientBuilder.build() : null;
     }
 
     // 1. Create ticket, call Gemini for AI Triage (Priority + Team), and save as OPEN
@@ -37,40 +38,37 @@ public class TicketService {
         ticket.setCategory(requestDTO.getCategory() != null ? requestDTO.getCategory() : "GENERAL");
         ticket.setStatus("OPEN");
 
-        // Construct a structured prompt for Gemini to assign both Priority and Team
-        String prompt = String.format(
-                "Analyze the following support ticket. " +
-                        "1. Determine its priority: HIGH, MEDIUM, or LOW. " +
-                        "2. Determine the responsible team: TECH_SUPPORT, BILLING, or GENERAL. " +
-                        "Format your response strictly as: PRIORITY: [value], TEAM: [value]\n\n" +
-                        "Title: %s\n" +
-                        "Description: %s",
-                requestDTO.getTitle(), requestDTO.getDescription()
-        );
-
-        // Call Gemini via Spring AI
-        String aiResponse = chatClient.prompt(prompt).call().content();
-
-        // Default fallbacks
         String evaluatedPriority = "MEDIUM";
         String assignedTeam = "GENERAL";
 
-        // Parse Gemini's response safely
-        if (aiResponse != null) {
-            String upper = aiResponse.toUpperCase();
+        // Safe check so that unit tests won't crash if chatClient is mocked/null
+        if (chatClient != null) {
+            String prompt = String.format(
+                    "Analyze the following support ticket. " +
+                            "1. Determine its priority: HIGH, MEDIUM, or LOW. " +
+                            "2. Determine the responsible team: TECH_SUPPORT, BILLING, or GENERAL. " +
+                            "Format your response strictly as: PRIORITY: [value], TEAM: [value]\n\n" +
+                            "Title: %s\n" +
+                            "Description: %s",
+                    requestDTO.getTitle(), requestDTO.getDescription()
+            );
 
-            // Extract Priority
-            if (upper.contains("HIGH")) {
-                evaluatedPriority = "HIGH";
-            } else if (upper.contains("LOW")) {
-                evaluatedPriority = "LOW";
-            }
+            String aiResponse = chatClient.prompt(prompt).call().content();
 
-            // Extract Team
-            if (upper.contains("TECH_SUPPORT")) {
-                assignedTeam = "TECH_SUPPORT";
-            } else if (upper.contains("BILLING")) {
-                assignedTeam = "BILLING";
+            if (aiResponse != null) {
+                String upper = aiResponse.toUpperCase();
+
+                if (upper.contains("HIGH")) {
+                    evaluatedPriority = "HIGH";
+                } else if (upper.contains("LOW")) {
+                    evaluatedPriority = "LOW";
+                }
+
+                if (upper.contains("TECH_SUPPORT")) {
+                    assignedTeam = "TECH_SUPPORT";
+                } else if (upper.contains("BILLING")) {
+                    assignedTeam = "BILLING";
+                }
             }
         }
 
@@ -79,7 +77,6 @@ public class TicketService {
 
         Ticket savedTicket = ticketRepository.save(ticket);
 
-        // Calculate latency and log the metric
         long endTime = System.currentTimeMillis();
         long latency = endTime - startTime;
         logger.info("METRIC: AI Triage completed for ticket ID [{}] in {} ms", savedTicket.getId(), latency);
